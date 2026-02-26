@@ -3,9 +3,7 @@ package exporter
 import (
 	"context"
 	"crypto/tls"
-	"encoding/xml"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"time"
