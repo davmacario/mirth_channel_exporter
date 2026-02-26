@@ -48,10 +48,41 @@ type ChannelStats struct {
 	Queued    string   `xml:"queued"`
 }
 
+/* System stats XML example:
+ *
+ * <com.mirth.connect.model.SystemStats>
+ *   <timestamp>
+ *     <time>1772032297737</time>
+ *     <timezone>Etc/UTC</timezone>
+ *   </timestamp>
+ *   <cpuUsagePct>0.04252184090624086</cpuUsagePct>
+ *   <allocatedMemoryBytes>200278016</allocatedMemoryBytes>
+ *   <freeMemoryBytes>111327256</freeMemoryBytes>
+ *   <maxMemoryBytes>268435456</maxMemoryBytes>
+ *   <diskFreeBytes>18790436864</diskFreeBytes>
+ *   <diskTotalBytes>31526391808</diskTotalBytes>
+ * </com.mirth.connect.model.SystemStats>
+ */
+type SystemStats struct {
+	CPUUsagePct          float64              `xml:"cpuUsagePct"`
+	AllocatedMemoryBytes int64                `xml:"allocatedMemoryBytes"`
+	FreeMemoryBytes      int64                `xml:"freeMemoryBytes"`
+	MaxMemoryBytes       int64                `xml:"maxMemoryBytes"`
+	DiskFreeBytes        int64                `xml:"diskFreeBytes"`
+	DiskTotalBytes       int64                `xml:"diskTotalBytes"`
+	Timestamp            SystemStatsTimestamp `xml:"timestamp"`
+}
+
+type SystemStatsTimestamp struct {
+	Time     int64  `xml:"time"`
+	Timezone string `xml:"timezone"`
+}
+
 const (
 	namespace        = "mirth"
 	channelIdNameAPI = "/channels/idsAndNames"
 	channelStatsAPI  = "/channels/statistics"
+	systemStatsAPI   = "/system/stats"
 	// DefaultHTTPClientTimeout is the default timeout for HTTP client requests.
 	DefaultHTTPClientTimeout = 10 * time.Second
 )
@@ -101,9 +132,30 @@ var (
 		"How many messages have errored (per channel).",
 		[]string{"channel"}, nil,
 	)
+	cpuUsagePct = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "cpu_usage_pct"),
+		"CPU usage percentage.",
+		[]string{"system"}, nil,
+	)
+	allocatedMemoryBytes = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "allocated_memory_bytes"),
+		"Allocated memory in bytes.",
+		[]string{"system"}, nil,
+	)
+	freeMemoryBytes = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "free_memory_bytes"),
+		"Allocated memory in bytes.",
+		[]string{"system"}, nil,
+	)
+	diskTotalBytes = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "disk_total_bytes"),
+		"Total disk space in bytes.",
+		[]string{"system"}, nil,
+	)
 )
 
 // Exporter collects Mirth statistics and exports them as Prometheus metrics.
+// Complies with prometheus.Collector interface.
 type Exporter struct {
 	mirthEndpoint string
 	mirthUsername string
@@ -145,7 +197,14 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		// Optionally set 'up' to 0 if subsequent collection fails after initial success
 		// ch <- prometheus.MustNewConstMetric(up, prometheus.GaugeValue, 0)
 	} else {
-		log.Println("Successfully scraped Mirth endpoint.")
+		log.Println("Successfully scraped Mirth endpoint (channels).")
+	}
+
+	// Collect system statistics
+	if err := e.hitMirthStatsAPI(ch); err != nil {
+		log.Printf("ERROR: Failed to collect system statistics: %v", err)
+	} else {
+		log.Println("Successfully scraped Mirth endpoint (system).")
 	}
 }
 
@@ -245,6 +304,44 @@ func (e *Exporter) hitMirthRestAPIsAndUpdateMetrics(channelIDNameMap map[string]
 		sendMetric(messagesFiltered, channel.Filtered)
 		sendMetric(messagesQueued, channel.Queued)
 	}
+
+	return nil
+}
+
+// Retrieve system metrics from Mirth and send them to Prometheus
+func (e *Exporter) hitMirthStatsAPI(ch chan<- prometheus.Metric) error {
+	req, err := http.NewRequestWithContext(context.Background(), "GET", e.mirthEndpoint+systemStatsAPI, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request for system statistics: %w", err)
+	}
+
+	req.SetBasicAuth(e.mirthUsername, e.mirthPassword)
+	req.Header.Set("X-Requested-With", "OpenAPI")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to perform HTTP request for system statistics: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("received non-OK status code %d from system statistics API: %s", resp.StatusCode, resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body for system statistics: %w", err)
+	}
+
+	var systemStats SystemStats
+	if err := xml.Unmarshal(body, &systemStats); err != nil {
+		return fmt.Errorf("failed to unmarshal XML for system statistics: %w", err)
+	}
+
+	ch <- prometheus.MustNewConstMetric(cpuUsagePct, prometheus.GaugeValue, systemStats.CPUUsagePct, "system")
+	ch <- prometheus.MustNewConstMetric(allocatedMemoryBytes, prometheus.GaugeValue, float64(systemStats.AllocatedMemoryBytes), "system")
+	ch <- prometheus.MustNewConstMetric(freeMemoryBytes, prometheus.GaugeValue, float64(systemStats.FreeMemoryBytes), "system")
+	ch <- prometheus.MustNewConstMetric(diskTotalBytes, prometheus.GaugeValue, float64(systemStats.DiskTotalBytes), "system")
 
 	return nil
 }
