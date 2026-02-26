@@ -8,17 +8,12 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
-	namespace        = "mirth"
-	channelIdNameAPI = "/channels/idsAndNames"
-	channelStatsAPI  = "/channels/statistics"
-	systemStatsAPI   = "/system/stats"
 	// DefaultHTTPClientTimeout is the default timeout for HTTP client requests.
 	DefaultHTTPClientTimeout = 10 * time.Second
 )
@@ -31,68 +26,55 @@ var (
 		},
 		Timeout: DefaultHTTPClientTimeout,
 	}
-	// Prometheus Metrics
-	up = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "up"),
-		"Was the last Mirth query successful.",
-		nil, nil,
-	)
-	messagesReceived = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "messages_received_total"),
-		"How many messages have been received (per channel).",
-		[]string{"channel"}, nil,
-	)
-	messagesFiltered = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "messages_filtered_total"),
-		"How many messages have been filtered (per channel).",
-		[]string{"channel"}, nil,
-	)
-	messagesQueued = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "messages_queued"),
-		"How many messages are currently queued (per channel).",
-		[]string{"channel"}, nil,
-	)
-	messagesSent = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "messages_sent_total"),
-		"How many messages have been sent (per channel).",
-		[]string{"channel"}, nil,
-	)
-	messagesErrored = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "messages_errored_total"),
-		"How many messages have errored (per channel).",
-		[]string{"channel"}, nil,
-	)
-	cpuUsagePct = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "cpu_usage_pct"),
-		"CPU usage percentage.",
-		[]string{"system"}, nil,
-	)
-	allocatedMemoryBytes = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "allocated_memory_bytes"),
-		"Allocated memory in bytes.",
-		[]string{"system"}, nil,
-	)
-	freeMemoryBytes = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "free_memory_bytes"),
-		"Free memory in bytes.",
-		[]string{"system"}, nil,
-	)
-	diskTotalBytes = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "disk_total_bytes"),
-		"Total disk space in bytes.",
-		[]string{"system"}, nil,
-	)
-	diskFreeBytes = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "disk_free_bytes"),
-		"Free disk space in bytes.",
-		[]string{"system"}, nil,
-	)
+	// Prometheus descs
+	descs         = make(map[string]*prometheus.Desc)
+	defaultLabels = []string{}
 )
+
+type metricDef struct {
+	name  string
+	help  string
+	label string // Using 1 label only
+}
+
+func init() {
+	const namespace = "mirth"
+
+	metrics := []metricDef{
+		{"up", "Was the last Mirth query successful.", "status"},
+		{"messages_received_total", "How many messages have been received (per channel).", "channel"},
+		{"messages_filtered_total", "How many messages have been filtered (per channel).", "channel"},
+		{"messages_queued", "How many messages are currently queued (per channel).", "channel"},
+		{"messages_sent_total", "How many messages have been sent (per channel).", "channel"},
+		{"messages_errored_total", "How many messages have errored (per channel).", "channel"},
+		{"cpu_usage_pct", "CPU usage percentage.", "system"},
+		{"allocated_memory_bytes", "Allocated memory in bytes.", "system"},
+		{"free_memory_bytes", "Free memory in bytes.", "system"},
+		{"disk_total_bytes", "Total disk space in bytes.", "system"},
+		{"disk_free_bytes", "Free disk space in bytes.", "system"},
+	}
+
+	for _, m := range metrics {
+		desc := prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", m.name),
+			m.help,
+			append(defaultLabels, m.label),
+			nil,
+		)
+		descs[m.name] = desc
+	}
+}
 
 type Exporter struct {
 	mirthEndpoint string
 	mirthUsername string
 	mirthPassword string
+	lastMetrics   *MetricsResponse
+}
+
+type MetricsResponse struct {
+	systemStats  *SystemStats
+	channelStats *ChannelStats
 }
 
 // NewExporter creates a new Exporter instance.
@@ -106,26 +88,22 @@ func NewExporter(mirthEndpoint, mirthUsername, mirthPassword string) *Exporter {
 
 // Describe sends the metric descriptions to the provided channel.
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
-	ch <- up
-	ch <- messagesReceived
-	ch <- messagesFiltered
-	ch <- messagesQueued
-	ch <- messagesSent
-	ch <- messagesErrored
+	prometheus.DescribeByCollect(e, ch)
 }
 
 // Collect fetches the Mirth statistics and delivers them as Prometheus metrics.
+// This is the main entry point for the Prometheus client to collect metrics.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	channelIDNameMap, err := e.loadChannelIDNameMap()
 	if err != nil {
 		log.Printf("ERROR: Failed to load channel ID to name map: %v", err)
-		ch <- prometheus.MustNewConstMetric(up, prometheus.GaugeValue, 0)
+		ch <- prometheus.MustNewConstMetric(descs["up"], prometheus.GaugeValue, 0)
 		return
 	}
 
-	ch <- prometheus.MustNewConstMetric(up, prometheus.GaugeValue, 1) // Mirth API is accessible
+	ch <- prometheus.MustNewConstMetric(descs["up"], prometheus.GaugeValue, 1, "status") // Mirth API is accessible => Mirth is up
 
-	if err := e.hitMirthRestAPIsAndUpdateMetrics(channelIDNameMap, ch); err != nil {
+	if err := e.gatherMirthChannelStats(channelIDNameMap, ch); err != nil {
 		log.Printf("ERROR: Failed to collect channel statistics: %v", err)
 		// Optionally set 'up' to 0 if subsequent collection fails after initial success
 		// ch <- prometheus.MustNewConstMetric(up, prometheus.GaugeValue, 0)
@@ -139,143 +117,17 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	} else {
 		log.Println("Successfully scraped Mirth endpoint (system).")
 	}
+
+	// TODO: Collect DB stats
 }
 
-// loadChannelIDNameMap fetches channel IDs and names from Mirth and returns them as a map.
-func (e *Exporter) loadChannelIDNameMap() (map[string]string, error) {
-	channelIDNameMap := make(map[string]string)
-
-	req, err := http.NewRequestWithContext(context.Background(), "GET", e.mirthEndpoint+channelIdNameAPI, nil)
+// Submit request to API endpoint specified in `path`
+func (e *Exporter) makeMirthAPIRequest(ctx context.Context, path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.mirthEndpoint+path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request for channel ID names: %w", err)
 	}
-
 	req.SetBasicAuth(e.mirthUsername, e.mirthPassword)
 	req.Header.Set("X-Requested-With", "OpenAPI")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to perform HTTP request for channel ID names: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("received non-OK status code %d from channel ID names API: %s", resp.StatusCode, resp.Status)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body for channel ID names: %w", err)
-	}
-
-	var channelIDNameMapXML ChannelIdNameMap
-	if err := xml.Unmarshal(body, &channelIDNameMapXML); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal XML for channel ID names: %w", err)
-	}
-
-	for _, entry := range channelIDNameMapXML.Entries {
-		if len(entry.Values) == 2 {
-			channelIDNameMap[entry.Values[0]] = entry.Values[1]
-		} else {
-			log.Printf("WARNING: Unexpected number of values (%d) in channel ID name entry: %v", len(entry.Values), entry.Values)
-		}
-	}
-
-	return channelIDNameMap, nil
-}
-
-// hitMirthRestAPIsAndUpdateMetrics fetches channel statistics and updates Prometheus metrics.
-func (e *Exporter) hitMirthRestAPIsAndUpdateMetrics(channelIDNameMap map[string]string, ch chan<- prometheus.Metric) error {
-	req, err := http.NewRequestWithContext(context.Background(), "GET", e.mirthEndpoint+channelStatsAPI, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request for channel statistics: %w", err)
-	}
-
-	req.SetBasicAuth(e.mirthUsername, e.mirthPassword)
-	req.Header.Set("X-Requested-With", "OpenAPI")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to perform HTTP request for channel statistics: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("received non-OK status code %d from channel statistics API: %s", resp.StatusCode, resp.Status)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body for channel statistics: %w", err)
-	}
-
-	var channelStatsList ChannelStatsList
-	if err := xml.Unmarshal(body, &channelStatsList); err != nil {
-		return fmt.Errorf("failed to unmarshal XML for channel statistics: %w", err)
-	}
-
-	for _, channel := range channelStatsList.Channels {
-		channelName, ok := channelIDNameMap[channel.ChannelId]
-		if !ok {
-			log.Printf("WARNING: Channel ID '%s' not found in ID-name map. Skipping metrics for this channel.", channel.ChannelId)
-			continue
-		}
-
-		// Helper function to parse and send metric
-		sendMetric := func(desc *prometheus.Desc, valueStr string) {
-			value, err := strconv.ParseFloat(valueStr, 64)
-			if err != nil {
-				log.Printf("WARNING: Failed to parse metric value '%s' for channel '%s': %v", valueStr, channelName, err)
-				return
-			}
-			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, value, channelName)
-		}
-
-		sendMetric(messagesReceived, channel.Received)
-		sendMetric(messagesSent, channel.Sent)
-		sendMetric(messagesErrored, channel.Error)
-		sendMetric(messagesFiltered, channel.Filtered)
-		sendMetric(messagesQueued, channel.Queued)
-	}
-
-	return nil
-}
-
-// Retrieve system metrics from Mirth and send them to Prometheus
-func (e *Exporter) hitMirthStatsAPI(ch chan<- prometheus.Metric) error {
-	req, err := http.NewRequestWithContext(context.Background(), "GET", e.mirthEndpoint+systemStatsAPI, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request for system statistics: %w", err)
-	}
-
-	req.SetBasicAuth(e.mirthUsername, e.mirthPassword)
-	req.Header.Set("X-Requested-With", "OpenAPI")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to perform HTTP request for system statistics: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("received non-OK status code %d from system statistics API: %s", resp.StatusCode, resp.Status)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body for system statistics: %w", err)
-	}
-
-	var systemStats SystemStats
-	if err := xml.Unmarshal(body, &systemStats); err != nil {
-		return fmt.Errorf("failed to unmarshal XML for system statistics: %w", err)
-	}
-
-	ch <- prometheus.MustNewConstMetric(cpuUsagePct, prometheus.GaugeValue, systemStats.CPUUsagePct, "system")
-	ch <- prometheus.MustNewConstMetric(allocatedMemoryBytes, prometheus.GaugeValue, float64(systemStats.AllocatedMemoryBytes), "system")
-	ch <- prometheus.MustNewConstMetric(freeMemoryBytes, prometheus.GaugeValue, float64(systemStats.FreeMemoryBytes), "system")
-	ch <- prometheus.MustNewConstMetric(diskTotalBytes, prometheus.GaugeValue, float64(systemStats.DiskTotalBytes), "system")
-	ch <- prometheus.MustNewConstMetric(diskFreeBytes, prometheus.GaugeValue, float64(systemStats.DiskFreeBytes), "system")
-
-	return nil
+	return httpClient.Do(req)
 }
