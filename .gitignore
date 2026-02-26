@@ -1,2 +1,3 @@
 .env
 mirth_channel_exporter
+build/
