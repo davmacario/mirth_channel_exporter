@@ -144,12 +144,17 @@ var (
 	)
 	freeMemoryBytes = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "", "free_memory_bytes"),
-		"Allocated memory in bytes.",
+		"Free memory in bytes.",
 		[]string{"system"}, nil,
 	)
 	diskTotalBytes = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "", "disk_total_bytes"),
 		"Total disk space in bytes.",
+		[]string{"system"}, nil,
+	)
+	diskFreeBytes = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "disk_free_bytes"),
+		"Free disk space in bytes.",
 		[]string{"system"}, nil,
 	)
 )
@@ -342,6 +347,7 @@ func (e *Exporter) hitMirthStatsAPI(ch chan<- prometheus.Metric) error {
 	ch <- prometheus.MustNewConstMetric(allocatedMemoryBytes, prometheus.GaugeValue, float64(systemStats.AllocatedMemoryBytes), "system")
 	ch <- prometheus.MustNewConstMetric(freeMemoryBytes, prometheus.GaugeValue, float64(systemStats.FreeMemoryBytes), "system")
 	ch <- prometheus.MustNewConstMetric(diskTotalBytes, prometheus.GaugeValue, float64(systemStats.DiskTotalBytes), "system")
+	ch <- prometheus.MustNewConstMetric(diskFreeBytes, prometheus.GaugeValue, float64(systemStats.DiskFreeBytes), "system")
 
 	return nil
 }
@@ -379,13 +385,13 @@ func main() {
 
 	http.Handle(*metricsPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(fmt.Sprintf(`<html>
+		fmt.Fprintf(w, `<html>
              <head><title>Mirth Channel Exporter</title></head>
              <body>
              <h1>Mirth Channel Exporter</h1>
              <p><a href='%s'>Metrics</a></p>
              </body>
-             </html>`, *metricsPath)))
+             </html>`, *metricsPath)
 	})
 
 	log.Fatal(http.ListenAndServe(*listenAddress, nil))
