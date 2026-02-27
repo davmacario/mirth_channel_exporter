@@ -1,4 +1,4 @@
-BINARY_NAME := mirth_channel_exporter
+BINARY_NAME := mirth-channel-exporter
 BUILD_DIR := build
 BINARY_PATH := ./$(BUILD_DIR)/$(BINARY_NAME)
 
