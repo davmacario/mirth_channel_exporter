@@ -31,3 +31,7 @@ run: build
 fmt:
 	@echo "Formatting code..."
 	go fmt ./...
+
+container:
+	@echo "Building container image..."
+	docker build -t $(BINARY_NAME):latest .

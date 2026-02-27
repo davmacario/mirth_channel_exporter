@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.26-trixie AS builder
 
 WORKDIR /build
 
@@ -13,7 +13,7 @@ RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -o ./app .
 
 # Deploy the application binary
-FROM gcr.io/distroless/base-debian12
+FROM gcr.io/distroless/base-debian13
 
 # Copy the binary from the build stage
 COPY --from=builder /build/app /app
