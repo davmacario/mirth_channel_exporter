@@ -95,11 +95,11 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	channelIDNameMap, err := e.loadChannelIDNameMap()
 	if err != nil {
 		log.Printf("ERROR: Failed to load channel ID to name map: %v", err)
-		ch <- prometheus.MustNewConstMetric(descs["up"], prometheus.GaugeValue, 0)
+		ch <- prometheus.MustNewConstMetric(descs["up"], prometheus.GaugeValue, 0, "down")
 		return
 	}
 
-	ch <- prometheus.MustNewConstMetric(descs["up"], prometheus.GaugeValue, 1, "status") // Mirth API is accessible => Mirth is up
+	ch <- prometheus.MustNewConstMetric(descs["up"], prometheus.GaugeValue, 1, "up") // Mirth API is accessible => Mirth is up
 
 	if err := e.gatherMirthChannelStats(channelIDNameMap, ch); err != nil {
 		log.Printf("ERROR: Failed to collect channel statistics: %v", err)
