@@ -25,39 +25,40 @@ var (
 		Timeout: DefaultHTTPClientTimeout,
 	}
 	// Prometheus descs
-	descs         = make(map[string]*prometheus.Desc)
-	defaultLabels = []string{}
+	descs = make(map[string]*prometheus.Desc)
 )
 
 type metricDef struct {
-	name  string
-	help  string
-	label string // Using 1 label only
+	name        string
+	help        string
+	extraLabels []string
+	typeLabel   string
 }
 
 func init() {
 	const namespace = "mirth"
 
 	metrics := []metricDef{
-		{"up", "Was the last Mirth query successful.", "status"},
-		{"messages_received_total", "How many messages have been received (per channel).", "channel"},
-		{"messages_filtered_total", "How many messages have been filtered (per channel).", "channel"},
-		{"messages_queued", "How many messages are currently queued (per channel).", "channel"},
-		{"messages_sent_total", "How many messages have been sent (per channel).", "channel"},
-		{"messages_errored_total", "How many messages have errored (per channel).", "channel"},
-		{"cpu_usage_pct", "CPU usage percentage.", "system"},
-		{"allocated_memory_bytes", "Allocated memory in bytes.", "system"},
-		{"free_memory_bytes", "Free memory in bytes.", "system"},
-		{"disk_total_bytes", "Total disk space in bytes.", "system"},
-		{"disk_free_bytes", "Free disk space in bytes.", "system"},
+		{"up", "Was the last Mirth query successful.", nil, "status"},
+		{"messages_received_total", "How many messages have been received (per channel).", []string{"channel"}, "channels"},
+		{"messages_filtered_total", "How many messages have been filtered (per channel).", []string{"channel"}, "channels"},
+		{"messages_queued", "How many messages are currently queued (per channel).", []string{"channel"}, "channels"},
+		{"messages_sent_total", "How many messages have been sent (per channel).", []string{"channel"}, "channels"},
+		{"messages_errored_total", "How many messages have errored (per channel).", []string{"channel"}, "channels"},
+		{"cpu_usage_pct", "CPU usage percentage.", nil, "system"},
+		{"allocated_memory_bytes", "Allocated memory in bytes.", nil, "system"},
+		{"free_memory_bytes", "Free memory in bytes.", nil, "system"},
+		{"disk_total_bytes", "Total disk space in bytes.", nil, "system"},
+		{"disk_free_bytes", "Free disk space in bytes.", nil, "system"},
+		{"num_db_tasks", "Number of database tasks.", nil, "database"},
 	}
 
 	for _, m := range metrics {
 		desc := prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "", m.name),
 			m.help,
-			append(defaultLabels, m.label),
-			nil,
+			m.extraLabels,
+			prometheus.Labels{"type": m.typeLabel},
 		)
 		descs[m.name] = desc
 	}
@@ -95,11 +96,11 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	channelIDNameMap, err := e.loadChannelIDNameMap()
 	if err != nil {
 		log.Printf("ERROR: Failed to load channel ID to name map: %v", err)
-		ch <- prometheus.MustNewConstMetric(descs["up"], prometheus.GaugeValue, 0, "down")
+		ch <- prometheus.MustNewConstMetric(descs["up"], prometheus.GaugeValue, 0)
 		return
 	}
 
-	ch <- prometheus.MustNewConstMetric(descs["up"], prometheus.GaugeValue, 1, "up") // Mirth API is accessible => Mirth is up
+	ch <- prometheus.MustNewConstMetric(descs["up"], prometheus.GaugeValue, 1) // Mirth API is accessible => Mirth is up
 
 	if err := e.gatherMirthChannelStats(channelIDNameMap, ch); err != nil {
 		log.Printf("ERROR: Failed to collect channel statistics: %v", err)
@@ -110,13 +111,18 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	// Collect system statistics
-	if err := e.hitMirthStatsAPI(ch); err != nil {
+	if err := e.gatherSystemStats(ch); err != nil {
 		log.Printf("ERROR: Failed to collect system statistics: %v", err)
 	} else {
 		log.Println("Successfully scraped Mirth endpoint (system).")
 	}
 
-	// TODO: Collect DB stats
+	// Collect DB stats
+	if err := e.gatherDatabaseTasks(ch); err != nil {
+		log.Printf("ERROR: Failed to collect database task statistics: %v", err)
+	} else {
+		log.Println("Successfully scraped Mirth endpoint (database).")
+	}
 }
 
 // Submit request to API endpoint specified in `path`

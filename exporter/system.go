@@ -43,7 +43,7 @@ type SystemStatsTimestamp struct {
 }
 
 // Retrieve system metrics from Mirth and send them to Prometheus
-func (e *Exporter) hitMirthStatsAPI(ch chan<- prometheus.Metric) error {
+func (e *Exporter) gatherSystemStats(ch chan<- prometheus.Metric) error {
 	resp, err := e.makeMirthAPIRequest(context.Background(), systemStatsAPI)
 	if err != nil {
 		return fmt.Errorf("failed to perform HTTP request for system statistics: %w", err)
@@ -64,11 +64,11 @@ func (e *Exporter) hitMirthStatsAPI(ch chan<- prometheus.Metric) error {
 		return fmt.Errorf("failed to unmarshal XML for system statistics: %w", err)
 	}
 
-	ch <- prometheus.MustNewConstMetric(descs["cpu_usage_pct"], prometheus.GaugeValue, systemStats.CPUUsagePct, "system")
-	ch <- prometheus.MustNewConstMetric(descs["allocated_memory_bytes"], prometheus.GaugeValue, float64(systemStats.AllocatedMemoryBytes), "system")
-	ch <- prometheus.MustNewConstMetric(descs["free_memory_bytes"], prometheus.GaugeValue, float64(systemStats.FreeMemoryBytes), "system")
-	ch <- prometheus.MustNewConstMetric(descs["disk_total_bytes"], prometheus.GaugeValue, float64(systemStats.DiskTotalBytes), "system")
-	ch <- prometheus.MustNewConstMetric(descs["disk_free_bytes"], prometheus.GaugeValue, float64(systemStats.DiskFreeBytes), "system")
+	ch <- prometheus.MustNewConstMetric(descs["cpu_usage_pct"], prometheus.GaugeValue, systemStats.CPUUsagePct)
+	ch <- prometheus.MustNewConstMetric(descs["allocated_memory_bytes"], prometheus.GaugeValue, float64(systemStats.AllocatedMemoryBytes))
+	ch <- prometheus.MustNewConstMetric(descs["free_memory_bytes"], prometheus.GaugeValue, float64(systemStats.FreeMemoryBytes))
+	ch <- prometheus.MustNewConstMetric(descs["disk_total_bytes"], prometheus.GaugeValue, float64(systemStats.DiskTotalBytes))
+	ch <- prometheus.MustNewConstMetric(descs["disk_free_bytes"], prometheus.GaugeValue, float64(systemStats.DiskFreeBytes))
 
 	return nil
 }

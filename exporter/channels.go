@@ -69,6 +69,7 @@ func (e *Exporter) gatherMirthChannelStats(channelIDNameMap map[string]string, c
 	}
 
 	for _, channel := range channelStatsList.Channels {
+		// NOTE: channel metrics have a label indicating the specific channel ID
 		channelName, ok := channelIDNameMap[channel.ChannelId]
 		if !ok {
 			log.Printf("WARNING: Channel ID '%s' not found in ID-name map. Skipping metrics for this channel.", channel.ChannelId)
